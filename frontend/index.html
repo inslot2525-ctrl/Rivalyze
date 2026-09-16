@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Rivalyze — Competitive Intelligence</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              brand: {
+                50: '#f0f4ff',
+                100: '#e0e9ff',
+                500: '#4f6ef7',
+                600: '#3b5bdb',
+                700: '#2f4ac7'
+              }
+            }
+          }
+        }
+      }
+    </script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      * { font-family: 'Inter', sans-serif; }
+      .brand-font { font-family: 'Space Grotesk', sans-serif; }
+      .pulse-dot { animation: pulse 2s infinite; }
+      @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+      .skeleton {
+        background: linear-gradient(90deg,#1e293b 25%,#273449 50%,#1e293b 75%);
+        background-size: 200% 100%;
+        animation: shimmer 1.5s infinite;
+      }
+      @keyframes shimmer { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+    </style>
+  </head>
+  <body class="bg-slate-950 text-slate-100 min-h-screen">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
