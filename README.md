@@ -155,13 +155,6 @@ Try these for a strong demo — each produces a visually distinct brief:
 
 ---
 
-## Built at
-
-**SerpApi India Hackathon 2026** — AI Agents track  
-Category: Commerce & Market Intelligence
-
----
-
 ## License
 
 MIT
