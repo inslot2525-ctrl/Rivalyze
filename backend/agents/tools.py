@@ -18,47 +18,47 @@ def _search(params: dict) -> str:
         return json.dumps({"error": str(e)})
 
 
-def web_search(company: str, query: str = None) -> str:
+def web_search(company: str, query: str = None, **kwargs) -> str:
     q = query or f"{company} company overview"
     return _search({"engine": "google", "q": q, "num": 10})
 
 
-def news_search(company: str, query: str = None) -> str:
+def news_search(company: str, query: str = None, **kwargs) -> str:
     q = query or f"{company} latest news 2025"
     return _search({"engine": "google", "q": q, "tbm": "nws", "num": 10})
 
 
-def shopping_search(company: str, query: str = None) -> str:
+def shopping_search(company: str, query: str = None, **kwargs) -> str:
     q = query or f"{company} products pricing"
     return _search({"engine": "google", "q": q, "tbm": "shop", "num": 10})
 
 
-def videos_search(company: str, query: str = None) -> str:
+def videos_search(company: str, query: str = None, **kwargs) -> str:
     q = query or company
     return _search({"engine": "youtube", "search_query": q, "num": 5})
 
 
-def finance_search(company: str, query: str = None) -> str:
+def finance_search(company: str, query: str = None, **kwargs) -> str:
     q = query or f"{company} stock price market cap"
     return _search({"engine": "google", "q": q, "num": 5})
 
 
-def jobs_search(company: str, query: str = None) -> str:
+def jobs_search(company: str, query: str = None, **kwargs) -> str:
     q = query or f"{company} jobs hiring 2025"
     return _search({"engine": "google_jobs", "q": q})
 
 
-def maps_search(company: str, query: str = None) -> str:
+def maps_search(company: str, query: str = None, **kwargs) -> str:
     q = query or f"{company} office headquarters"
     return _search({"engine": "google_maps", "q": q, "type": "search"})
 
 
-def images_search(company: str, query: str = None) -> str:
+def images_search(company: str, query: str = None, **kwargs) -> str:
     q = query or f"{company} company"
     return _search({"engine": "google", "q": q, "tbm": "isch", "num": 10})
 
 
-def competitor_search(company: str) -> str:
+def competitor_search(company: str, **kwargs) -> str:
     return _search({"engine": "google", "q": f"{company} competitors alternatives", "num": 10})
 
 

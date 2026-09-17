@@ -2,14 +2,27 @@ import os
 import json
 import asyncio
 from typing import List, Dict, Any, Optional
-from groq import Groq
+import google.generativeai as genai
 from dotenv import load_dotenv
 from agents.tools import TOOL_MAP, TOOL_DEFINITIONS
 
 load_dotenv()
-client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-MODEL = "llama3-70b-8192"
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+MODEL = "gemini-1.5-flash"
+
+# Convert TOOL_DEFINITIONS to Gemini's function declaration format
+GEMINI_TOOLS = []
+for tool_def in TOOL_DEFINITIONS:
+    fn = tool_def["function"]
+    GEMINI_TOOLS.append({
+        "function_declarations": [{
+            "name": fn["name"],
+            "description": fn["description"],
+            "parameters": fn["parameters"]
+        }]
+    })
 
 BRIEF_SCHEMA = """{
   "company": "string — official company name",
@@ -35,77 +48,94 @@ class AgenticOrchestrator:
         self.context = context or {}
         self.search_history: List[Dict] = []
         self.brief: Optional[Dict] = None
+        self.model = genai.GenerativeModel(MODEL, tools=GEMINI_TOOLS)
 
     async def run_agentic_analysis(self) -> Dict:
         """Run iterative agentic loop: decide next search based on findings."""
         system_prompt = f"""You are Rivalyze, an elite competitive intelligence analyst.
-Analyze {self.company} by iteratively calling search tools.
-Decide each next search based on what you've learned so far.
-After sufficient data, synthesize into this EXACT JSON:
+Analyze {self.company} by calling search tools (maximum 4 calls total).
+After gathering data, synthesize into this EXACT JSON:
 {BRIEF_SCHEMA}
-Return ONLY valid JSON when done."""
+Return ONLY valid JSON when done — no markdown, no explanation."""
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Begin analysis of {self.company}. Start with the most important searches."}
-        ]
+        chat = self.model.start_chat(history=[
+            {"role": "user", "parts": [system_prompt]},
+            {"role": "model", "parts": ["Understood. I'll begin the analysis."]},
+            {"role": "user", "parts": [f"Begin analysis of {self.company}. Start with the most important searches."]}
+        ])
 
-        max_iterations = 10
+        MAX_TOOL_CALLS = 4
+        tool_calls_made = 0
+        max_iterations = 8
+
         for iteration in range(max_iterations):
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=messages,
-                tools=TOOL_DEFINITIONS,
-                tool_choice="auto",
-                temperature=0.3,
-                max_tokens=2048,
-            )
-
-            msg = response.choices[0].message
-
-            if msg.tool_calls:
-                messages.append({"role": "assistant", "content": msg.content, "tool_calls": msg.tool_calls})
-
-                for tool_call in msg.tool_calls:
-                    fn_name = tool_call.function.name
-                    fn_args = json.loads(tool_call.function.arguments)
-                    fn = TOOL_MAP.get(fn_name)
-                    if fn:
-                        result = fn(**fn_args)
-                        self.search_history.append({
-                            "tool": fn_name,
-                            "args": fn_args,
-                            "result": result[:2000] if len(result) > 2000 else result
-                        })
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": result[:2000] if len(result) > 2000 else result
-                        })
-                    else:
-                        messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": f"Error: Unknown tool {fn_name}"
-                        })
-            else:
-                # No tool calls - synthesis complete
-                raw = (msg.content or "").strip()
-                if raw.startswith("```"):
-                    lines = raw.split("\n")
-                    lines = [l for l in lines if not l.startswith("```")]
-                    raw = "\n".join(lines)
+            if tool_calls_made >= MAX_TOOL_CALLS:
+                response = await chat.send_message_async(
+                    "You have gathered enough data. Now synthesize everything into the required JSON. Return ONLY valid JSON, no markdown, no explanation.",
+                    generation_config=genai.GenerationConfig(temperature=0.2, max_output_tokens=2048)
+                )
+                raw = self._clean_json(response.text or "")
                 try:
                     self.brief = json.loads(raw)
                     self.brief["_search_history"] = self.search_history
                     return self.brief
                 except json.JSONDecodeError:
-                    # Force one more iteration to get valid JSON
-                    messages.append({"role": "user", "content": "Return ONLY the JSON object. No explanation."})
+                    return await self._fallback_synthesis()
+
+            response = await chat.send_message_async(
+                "Continue analysis. Call the next most relevant search tool.",
+                generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=2048)
+            )
+
+            # Check for function calls in response
+            function_calls = []
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, 'function_call') and part.function_call:
+                    function_calls.append(part.function_call)
+
+            if function_calls and tool_calls_made < MAX_TOOL_CALLS:
+                for fc in function_calls:
+                    fn_name = fc.name
+                    fn_args = dict(fc.args)
+                    fn = TOOL_MAP.get(fn_name)
+                    if fn:
+                        result = fn(**fn_args)
+                        trimmed = result[:1500] if len(result) > 1500 else result
+                        self.search_history.append({
+                            "tool": fn_name,
+                            "args": fn_args,
+                            "result": trimmed,
+                        })
+                        # Send function response back
+                        await chat.send_message_async(
+                            genai.protos.Part(function_response=genai.protos.FunctionResponse(
+                                name=fn_name,
+                                response={"result": trimmed}
+                            ))
+                        )
+                    tool_calls_made += 1
+            else:
+                # No function calls - parse synthesis
+                raw = self._clean_json(response.text or "")
+                try:
+                    self.brief = json.loads(raw)
+                    self.brief["_search_history"] = self.search_history
+                    return self.brief
+                except json.JSONDecodeError:
+                    # Ask again for valid JSON
+                    await chat.send_message_async("Return ONLY the JSON object. No explanation, no markdown.")
                     continue
 
-        # Fallback if max iterations reached
         return await self._fallback_synthesis()
+
+    def _clean_json(self, text: str) -> str:
+        """Strip markdown fences and clean up."""
+        text = text.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            lines = [l for l in lines if not l.startswith("```")]
+            text = "\n".join(lines)
+        return text.strip()
 
     async def _fallback_synthesis(self) -> Dict:
         """Final synthesis attempt with all collected data."""
@@ -113,20 +143,12 @@ Return ONLY valid JSON when done."""
         for entry in self.search_history:
             user_msg += f"=== {entry['tool'].upper()} ===\n{entry['result']}\n\n"
 
-        response = client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {"role": "system", "content": f"Output ONLY valid JSON matching this schema: {BRIEF_SCHEMA}"},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.2,
-            max_tokens=2048,
+        model = genai.GenerativeModel(MODEL)
+        response = await model.generate_content_async(
+            f"Output ONLY valid JSON matching this schema: {BRIEF_SCHEMA}\n\n{user_msg}",
+            generation_config=genai.GenerationConfig(temperature=0.2, max_output_tokens=2048)
         )
-        raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            lines = raw.split("\n")
-            lines = [l for l in lines if not l.startswith("```")]
-            raw = "\n".join(lines)
+        raw = self._clean_json(response.text or "")
         return json.loads(raw)
 
 
@@ -135,16 +157,13 @@ async def discover_competitors(company: str) -> List[str]:
     result = TOOL_MAP["competitor_search"](company)
     prompt = f"""From this search data, identify the top 3-5 direct competitors for {company}.
 Return ONLY a JSON array of competitor names: ["Competitor1", "Competitor2", ...]"""
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "Output ONLY a JSON array of competitor names."},
-            {"role": "user", "content": f"Search data:\n{result}\n\n{prompt}"},
-        ],
-        temperature=0.2,
-        max_tokens=512,
+
+    model = genai.GenerativeModel(MODEL)
+    response = await model.generate_content_async(
+        f"Search data:\n{result}\n\n{prompt}",
+        generation_config=genai.GenerationConfig(temperature=0.2, max_output_tokens=512)
     )
-    raw = response.choices[0].message.content.strip()
+    raw = response.text.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")
         lines = [l for l in lines if not l.startswith("```")]
@@ -182,16 +201,12 @@ Output JSON with this structure:
 }}
 Return ONLY valid JSON."""
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "Output ONLY valid JSON."},
-            {"role": "user", "content": comp_prompt},
-        ],
-        temperature=0.3,
-        max_tokens=3072,
+    model = genai.GenerativeModel(MODEL)
+    response = await model.generate_content_async(
+        comp_prompt,
+        generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=3072)
     )
-    raw = response.choices[0].message.content.strip()
+    raw = response.text.strip()
     if raw.startswith("```"):
         lines = raw.split("\n")
         lines = [l for l in lines if not l.startswith("```")]
@@ -205,16 +220,12 @@ async def answer_followup(brief: Dict, question: str, search_history: List[Dict]
     for entry in search_history[-5:]:
         context += f"=== {entry['tool'].upper()} ===\n{entry['result']}\n\n"
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        messages=[
-            {"role": "system", "content": "You are Rivalyze. Answer the user's question using ONLY the provided intelligence brief and search data. Be concise, cite sources. If info not available, say so."},
-            {"role": "user", "content": f"Context:\n{context}\n\nQuestion: {question}"},
-        ],
-        temperature=0.3,
-        max_tokens=1024,
+    model = genai.GenerativeModel(MODEL)
+    response = await model.generate_content_async(
+        f"You are Rivalyze. Answer the user's question using ONLY the provided intelligence brief and search data. Be concise, cite sources. If info not available, say so.\n\nContext:\n{context}\n\nQuestion: {question}",
+        generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=1024)
     )
-    return response.choices[0].message.content.strip()
+    return response.text.strip()
 
 
 def generate_pdf(brief: Dict) -> bytes:
@@ -265,27 +276,22 @@ def generate_pdf(brief: Dict) -> bytes:
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=20)
 
-    # Executive Summary
     pdf.section_title("Executive Summary")
     pdf.body_text(brief.get("summary", "N/A"))
     pdf.body_text(f"Market Position: {brief.get('market_position', 'N/A')}")
 
-    # Sentiment
     pdf.section_title("Sentiment Analysis")
     sentiment = brief.get("sentiment", "neutral")
     pdf.body_text(f"Overall: {sentiment.capitalize()} — {brief.get('sentiment_reason', 'N/A')}")
 
-    # Recent Moves
     pdf.section_title("Recent Moves")
     for move in brief.get("recent_moves", [])[:5]:
         pdf.bullet(f"{move.get('title', '')} — {move.get('source', '')}: {move.get('snippet', '')}")
 
-    # Pricing
     pdf.section_title("Pricing Signals")
     for item in brief.get("pricing", [])[:5]:
         pdf.bullet(f"{item.get('product', '')}: {item.get('price', '')} ({item.get('source', '')})")
 
-    # Finance
     pdf.section_title("Market Data")
     fin = brief.get("finance", {})
     if fin.get("price"):
@@ -294,34 +300,28 @@ def generate_pdf(brief: Dict) -> bytes:
     else:
         pdf.body_text("No public market data available.")
 
-    # Hiring
     pdf.section_title("Hiring Signal")
     hiring = brief.get("hiring", {})
     pdf.body_text(f"Signal: {hiring.get('signal', 'Unknown').capitalize()} — {hiring.get('reason', 'N/A')}")
     for role in hiring.get("sample_roles", [])[:3]:
         pdf.bullet(role)
 
-    # Locations
     pdf.section_title("Physical Presence")
     for loc in brief.get("locations", [])[:6]:
         pdf.bullet(loc)
 
-    # Videos
     pdf.section_title("Video Presence")
     for vid in brief.get("key_videos", [])[:3]:
         pdf.bullet(f"{vid.get('title', '')} — {vid.get('channel', '')} ({vid.get('url', '')})")
 
-    # Risks
     pdf.section_title("Risks")
     for r in brief.get("risks", []):
         pdf.bullet(r)
 
-    # Opportunities
     pdf.section_title("Opportunities")
     for o in brief.get("opportunities", []):
         pdf.bullet(o)
 
-    # Top Sources
     pdf.section_title("Top Sources")
     pdf.body_text(", ".join(brief.get("top_sources", [])))
 
