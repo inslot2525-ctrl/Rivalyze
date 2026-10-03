@@ -23,7 +23,7 @@ scheduler = AsyncIOScheduler()
 async def run_scheduled_analysis(company: str, user_id: str):
     """Background job: run analysis, compare with previous, generate alerts."""
     try:
-        brief = await run_agent(company)
+        brief = run_agent(company)
 
         async with AsyncSessionLocal() as session:
             # Mark old snapshots as not latest
@@ -148,7 +148,7 @@ async def analyze(req: AnalyzeRequest):
         if req.comparative:
             result = await run_comparative(req.company.strip())
         else:
-            result = await run_agent(req.company.strip())
+            result = run_agent(req.company.strip())
         return result
     except Exception as e:
         traceback.print_exc()

@@ -2,6 +2,91 @@ import React, { useState, useEffect, useRef } from 'react'
 
 const API = 'http://localhost:8000'
 
+function RivalryRadar({ briefs }) {
+  const canvasRef = useRef(null)
+
+  useEffect(() => {
+    if (!canvasRef.current || !briefs.length) return
+    const labels = ['Hiring', 'News', 'Pricing', 'Brand', 'Web']
+    const colors = ['#4f6ef7', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6']
+
+    // Destroy existing chart if any
+    if (window.chartInstance) {
+      window.chartInstance.destroy()
+    }
+
+    window.chartInstance = new Chart(canvasRef.current, {
+      type: 'radar',
+      data: {
+        labels,
+        datasets: briefs.map((b, i) => {
+          const rs = b.rivalry_score || {}
+          return {
+            label: b.company,
+            data: [
+              rs.hiring_velocity || 0,
+              rs.news_momentum || 0,
+              rs.pricing_aggression || 0,
+              rs.brand_reach || 0,
+              rs.web_authority || 0,
+            ],
+            borderColor: colors[i % colors.length],
+            backgroundColor: colors[i % colors.length] + '33',
+            borderWidth: 2,
+            pointRadius: 4,
+            pointBackgroundColor: colors[i % colors.length],
+          }
+        })
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: { 
+          r: { 
+            min: 0, 
+            max: 20, 
+            ticks: { stepSize: 5, color: '#64748b', backdropColor: 'transparent' },
+            grid: { color: 'rgba(100, 116, 139, 0.2)' },
+            pointLabels: { color: '#94a3b8', font: { size: 11 } }
+          } 
+        },
+        plugins: { 
+          legend: { 
+            position: 'bottom', 
+            labels: { color: '#94a3b8', font: { size: 11 }, padding: 16 } 
+          },
+          tooltip: {
+            backgroundColor: '#1e293b',
+            titleColor: '#fff',
+            bodyColor: '#cbd5e1',
+            borderColor: '#334155',
+            borderWidth: 1,
+          }
+        }
+      }
+    })
+
+    return () => {
+      if (window.chartInstance) {
+        window.chartInstance.destroy()
+        window.chartInstance = null
+      }
+    }
+  }, [briefs])
+
+  return <canvas ref={canvasRef} className="h-72 w-full" />
+}
+
+function VerdictCard({ verdict }) {
+  return (
+    <Card title="Analyst Verdict" icon="⚖️" className="md:col-span-2 lg:col-span-3">
+      <div className="bg-gradient-to-r from-brand-900/30 to-emerald-900/20 border border-brand-700/50 rounded-xl p-5">
+        <p className="text-slate-200 text-base leading-relaxed">{verdict}</p>
+      </div>
+    </Card>
+  )
+}
+
 function SentimentBadge({ sentiment, reason }) {
   const cfg = {
     positive: { bg: 'bg-emerald-900/50', text: 'text-emerald-400', border: 'border-emerald-700', dot: 'bg-emerald-400', label: 'Positive' },
@@ -236,6 +321,9 @@ function Dashboard({ data, searchHistory, onExportPDF, onFollowup, onAddMonitor 
 }
 
 function ComparativeDashboard({ data, onExportPDF }) {
+  // Collect all briefs for radar chart
+  const allBriefs = Object.values(data.individual_briefs || {}).filter(b => b.rivalry_score)
+
   return (
     <div className="space-y-6">
       <div className="bg-gradient-to-br from-slate-900 to-slate-800 border border-slate-700 rounded-2xl p-6">
@@ -252,11 +340,33 @@ function ComparativeDashboard({ data, onExportPDF }) {
         </div>
       </div>
 
+      {/* Rivalry Radar Chart */}
+      {allBriefs.length > 0 && (
+        <Card title="Competitive Positioning Radar" icon="🎯" className="md:col-span-2 lg:col-span-3">
+          <RivalryRadar briefs={allBriefs} />
+        </Card>
+      )}
+
+      {/* Analyst Verdict */}
+      {data.verdict && <VerdictCard verdict={data.verdict} />}
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {Object.entries(data.individual_briefs || {}).map(([company, brief]) => (
           <Card key={company} title={company} icon="🏢" className="md:col-span-2 lg:col-span-1">
             <p className="text-slate-300 text-sm mb-3">{brief.summary}</p>
             <SentimentBadge sentiment={brief.sentiment} reason={brief.sentiment_reason} />
+            {brief.rivalry_score && (
+              <div className="mt-2 p-3 bg-slate-800/50 rounded-lg">
+                <p className="text-xs text-slate-400 uppercase tracking-wide">Rivalry Score: {brief.rivalry_score.total}/100</p>
+                <div className="flex gap-2 mt-1 text-xs">
+                  <span className="text-slate-500">Hiring: {brief.rivalry_score.hiring_velocity}</span>
+                  <span className="text-slate-500">News: {brief.rivalry_score.news_momentum}</span>
+                  <span className="text-slate-500">Pricing: {brief.rivalry_score.pricing_aggression}</span>
+                  <span className="text-slate-500">Brand: {brief.rivalry_score.brand_reach}</span>
+                  <span className="text-slate-500">Web: {brief.rivalry_score.web_authority}</span>
+                </div>
+              </div>
+            )}
             <div className="mt-3 space-y-1">
               <p className="text-slate-400 text-xs">Market: {brief.market_position}</p>
               {brief.finance?.price && (

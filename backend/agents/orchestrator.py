@@ -1,28 +1,15 @@
 import os
 import json
-import asyncio
-from typing import List, Dict, Any, Optional
+import concurrent.futures
 import google.generativeai as genai
 from dotenv import load_dotenv
-from agents.tools import TOOL_MAP, TOOL_DEFINITIONS
+from agents.tools import TOOL_MAP
 
 load_dotenv()
 
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-MODEL = "gemini-1.5-flash"
-
-# Convert TOOL_DEFINITIONS to Gemini's function declaration format
-GEMINI_TOOLS = []
-for tool_def in TOOL_DEFINITIONS:
-    fn = tool_def["function"]
-    GEMINI_TOOLS.append({
-        "function_declarations": [{
-            "name": fn["name"],
-            "description": fn["description"],
-            "parameters": fn["parameters"]
-        }]
-    })
+MODEL = "gemini-3.5-flash-lite"
 
 BRIEF_SCHEMA = """{
   "company": "string — official company name",
@@ -41,133 +28,110 @@ BRIEF_SCHEMA = """{
   "opportunities": ["string"]
 }"""
 
-
-class AgenticOrchestrator:
-    def __init__(self, company: str, context: Optional[Dict] = None):
-        self.company = company
-        self.context = context or {}
-        self.search_history: List[Dict] = []
-        self.brief: Optional[Dict] = None
-        self.model = genai.GenerativeModel(MODEL, tools=GEMINI_TOOLS)
-
-    async def run_agentic_analysis(self) -> Dict:
-        """Run iterative agentic loop: decide next search based on findings."""
-        system_prompt = f"""You are Rivalyze, an elite competitive intelligence analyst.
-Analyze {self.company} by calling search tools (maximum 4 calls total).
-After gathering data, synthesize into this EXACT JSON:
+SYSTEM_PROMPT = f"""You are Rivalyze, an elite competitive intelligence analyst.
+Synthesize all search data into this EXACT JSON structure:
 {BRIEF_SCHEMA}
-Return ONLY valid JSON when done — no markdown, no explanation."""
-
-        chat = self.model.start_chat(history=[
-            {"role": "user", "parts": [system_prompt]},
-            {"role": "model", "parts": ["Understood. I'll begin the analysis."]},
-            {"role": "user", "parts": [f"Begin analysis of {self.company}. Start with the most important searches."]}
-        ])
-
-        MAX_TOOL_CALLS = 4
-        tool_calls_made = 0
-        max_iterations = 8
-
-        for iteration in range(max_iterations):
-            if tool_calls_made >= MAX_TOOL_CALLS:
-                response = await chat.send_message_async(
-                    "You have gathered enough data. Now synthesize everything into the required JSON. Return ONLY valid JSON, no markdown, no explanation.",
-                    generation_config=genai.GenerationConfig(temperature=0.2, max_output_tokens=2048)
-                )
-                raw = self._clean_json(response.text or "")
-                try:
-                    self.brief = json.loads(raw)
-                    self.brief["_search_history"] = self.search_history
-                    return self.brief
-                except json.JSONDecodeError:
-                    return await self._fallback_synthesis()
-
-            response = await chat.send_message_async(
-                "Continue analysis. Call the next most relevant search tool.",
-                generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=2048)
-            )
-
-            # Check for function calls in response
-            function_calls = []
-            for part in response.candidates[0].content.parts:
-                if hasattr(part, 'function_call') and part.function_call:
-                    function_calls.append(part.function_call)
-
-            if function_calls and tool_calls_made < MAX_TOOL_CALLS:
-                for fc in function_calls:
-                    fn_name = fc.name
-                    fn_args = dict(fc.args)
-                    fn = TOOL_MAP.get(fn_name)
-                    if fn:
-                        result = fn(**fn_args)
-                        trimmed = result[:1500] if len(result) > 1500 else result
-                        self.search_history.append({
-                            "tool": fn_name,
-                            "args": fn_args,
-                            "result": trimmed,
-                        })
-                        # Send function response back
-                        await chat.send_message_async(
-                            genai.protos.Part(function_response=genai.protos.FunctionResponse(
-                                name=fn_name,
-                                response={"result": trimmed}
-                            ))
-                        )
-                    tool_calls_made += 1
-            else:
-                # No function calls - parse synthesis
-                raw = self._clean_json(response.text or "")
-                try:
-                    self.brief = json.loads(raw)
-                    self.brief["_search_history"] = self.search_history
-                    return self.brief
-                except json.JSONDecodeError:
-                    # Ask again for valid JSON
-                    await chat.send_message_async("Return ONLY the JSON object. No explanation, no markdown.")
-                    continue
-
-        return await self._fallback_synthesis()
-
-    def _clean_json(self, text: str) -> str:
-        """Strip markdown fences and clean up."""
-        text = text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            lines = [l for l in lines if not l.startswith("```")]
-            text = "\n".join(lines)
-        return text.strip()
-
-    async def _fallback_synthesis(self) -> Dict:
-        """Final synthesis attempt with all collected data."""
-        user_msg = f"Synthesize all search data for {self.company} into the required JSON:\n\n"
-        for entry in self.search_history:
-            user_msg += f"=== {entry['tool'].upper()} ===\n{entry['result']}\n\n"
-
-        model = genai.GenerativeModel(MODEL)
-        response = await model.generate_content_async(
-            f"Output ONLY valid JSON matching this schema: {BRIEF_SCHEMA}\n\n{user_msg}",
-            generation_config=genai.GenerationConfig(temperature=0.2, max_output_tokens=2048)
-        )
-        raw = self._clean_json(response.text or "")
-        return json.loads(raw)
+Return ONLY valid JSON — no markdown, no explanation, nothing else."""
 
 
-async def discover_competitors(company: str) -> List[str]:
-    """Identify top 3-5 competitors for a company."""
+def _clean_json(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        lines = [l for l in lines if not l.startswith("```")]
+        text = "\n".join(lines)
+    return text.strip()
+
+
+def compute_rivalry_score(brief: dict) -> dict:
+    """
+    Rule-based scoring — no LLM call needed.
+    Each dimension 0-20, total 0-100.
+    """
+    scores = {}
+
+    # Hiring velocity (0-20)
+    hiring = brief.get("hiring", {})
+    signal = hiring.get("signal", "stable")
+    roles = len(hiring.get("sample_roles", []))
+    if roles:
+        scores["hiring_velocity"] = min({"growing": 20, "stable": 12, "contracting": 4}.get(signal, 10) * min(roles / 3, 1), 20)
+    else:
+        scores["hiring_velocity"] = {"growing": 15, "stable": 10, "contracting": 3}.get(signal, 8)
+
+    # News momentum (0-20)
+    moves = brief.get("recent_moves", [])
+    scores["news_momentum"] = min(len(moves) * 4, 20)
+
+    # Pricing aggression (0-20)
+    pricing = brief.get("pricing", [])
+    scores["pricing_aggression"] = min(len(pricing) * 5, 20)
+
+    # Brand reach (0-20)
+    videos = brief.get("key_videos", [])
+    scores["brand_reach"] = min(len(videos) * 7, 20)
+
+    # Web authority (0-20)
+    sources = brief.get("top_sources", [])
+    scores["web_authority"] = min(len(sources) * 4, 20)
+
+    scores["total"] = sum(scores.values())
+    return scores
+
+
+def run_agent(company: str) -> dict:
+    """Run 8 SerpApi searches in parallel, then synthesize with Gemini."""
+    
+    # All 8 engines now active - each maps to a rivalry axis
+    ACTIVE_TOOLS = [
+        "web_search",       # → web_authority
+        "news_search",      # → news_momentum
+        "finance_search",   # → finance data
+        "jobs_search",      # → hiring_velocity
+        "shopping_search",  # → pricing_aggression
+        "videos_search",    # → brand_reach
+        "maps_search",      # → locations
+        "images_search",    # → visual signals
+    ]
+
+    search_results = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {executor.submit(TOOL_MAP[name], company): name for name in ACTIVE_TOOLS}
+        for future in concurrent.futures.as_completed(futures, timeout=35):
+            tool_name = futures[future]
+            try:
+                search_results[tool_name] = future.result(timeout=30)
+            except concurrent.futures.TimeoutError:
+                search_results[tool_name] = json.dumps({"error": "Search timeout (30s)"})
+            except Exception as e:
+                search_results[tool_name] = json.dumps({"error": str(e)})
+
+    user_message = f"Analyze this company: {company}\n\nSearch data collected:\n\n"
+    for tool_name, result in search_results.items():
+        user_message += f"=== {tool_name.upper()} ===\n{result}\n\n"
+    user_message += "\nNow synthesize all of the above into the required JSON structure."
+
+    model = genai.GenerativeModel(MODEL)
+    response = model.generate_content(
+        [SYSTEM_PROMPT, user_message],
+        generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=2048)
+    )
+    raw = _clean_json(response.text or "")
+    brief = json.loads(raw)
+    brief["rivalry_score"] = compute_rivalry_score(brief)
+    return brief
+
+
+async def discover_competitors(company: str) -> list:
     result = TOOL_MAP["competitor_search"](company)
     prompt = f"""From this search data, identify the top 3-5 direct competitors for {company}.
 Return ONLY a JSON array of competitor names: ["Competitor1", "Competitor2", ...]"""
-
     model = genai.GenerativeModel(MODEL)
-    response = await model.generate_content_async(
-        f"Search data:\n{result}\n\n{prompt}",
+    response = model.generate_content(
+        prompt,
         generation_config=genai.GenerationConfig(temperature=0.2, max_output_tokens=512)
     )
-    raw = response.text.strip()
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        lines = [l for l in lines if not l.startswith("```")]
-        raw = "\n".join(lines)
+    raw = _clean_json(response.text or "")
     try:
         competitors = json.loads(raw)
         return competitors[:5] if isinstance(competitors, list) else []
@@ -175,17 +139,24 @@ Return ONLY a JSON array of competitor names: ["Competitor1", "Competitor2", ...
         return []
 
 
-async def run_comparative_analysis(company: str) -> Dict:
-    """Run full analysis on company + competitors, produce comparative brief."""
+async def run_comparative(company: str) -> dict:
     competitors = await discover_competitors(company)
     all_companies = [company] + competitors
 
+    # Run all analyses in parallel
     briefs = {}
-    for c in all_companies:
-        orchestrator = AgenticOrchestrator(c)
-        briefs[c] = await orchestrator.run_agentic_analysis()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(run_agent, c): c for c in all_companies}
+        for future in concurrent.futures.as_completed(futures):
+            c = futures[future]
+            try:
+                briefs[c] = future.result()
+            except Exception as e:
+                briefs[c] = {"company": c, "error": str(e)}
 
-    # Generate comparative synthesis
+    # Generate rivalry verdict
+    verdict = generate_verdict(briefs)
+
     comp_prompt = f"""You are Rivalyze. Create a COMPARATIVE intelligence brief for {company} vs its competitors.
 Input: individual briefs for each company.
 Output JSON with this structure:
@@ -194,6 +165,7 @@ Output JSON with this structure:
   "competitors": {json.dumps(competitors)},
   "comparative_summary": "string — 2-3 sentences comparing market positions",
   "market_leader": "string — which company leads and why",
+  "verdict": {json.dumps(verdict)},
   "differentiators": {{"company": ["unique strength"]}},
   "shared_risks": ["string"],
   "shared_opportunities": ["string"],
@@ -202,34 +174,62 @@ Output JSON with this structure:
 Return ONLY valid JSON."""
 
     model = genai.GenerativeModel(MODEL)
-    response = await model.generate_content_async(
+    response = model.generate_content(
         comp_prompt,
         generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=3072)
     )
-    raw = response.text.strip()
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        lines = [l for l in lines if not l.startswith("```")]
-        raw = "\n".join(lines)
-    return json.loads(raw)
+    raw = _clean_json(response.text or "")
+    result = json.loads(raw)
+    result["verdict"] = verdict
+    return result
 
 
-async def answer_followup(brief: Dict, question: str, search_history: List[Dict]) -> str:
-    """Answer follow-up question using brief + search history as context."""
+def generate_verdict(briefs: dict) -> str:
+    """Single Gemini call for analyst verdict."""
+    valid_briefs = {k: v for k, v in briefs.items() if "error" not in v}
+    if not valid_briefs:
+        return "Insufficient data for verdict."
+
+    scores = {b["company"]: b.get("rivalry_score", {}).get("total", 0) for b in valid_briefs.values()}
+    winner = max(scores, key=scores.get)
+    winner_brief = valid_briefs[winner]
+
+    prompt = f"""
+Rivalry scores: {scores}
+Winner: {winner} ({scores[winner]}/100)
+
+Winner details:
+- Hiring: {winner_brief.get('hiring', {}).get('signal', 'N/A')} — {winner_brief.get('hiring', {}).get('reason', 'N/A')}
+- Recent moves: {len(winner_brief.get('recent_moves', []))} items
+- Sentiment: {winner_brief.get('sentiment', 'N/A')}
+
+All companies: {list(valid_briefs.keys())}
+
+Write a 2-sentence analyst verdict: who is winning competitively RIGHT NOW and the single most important reason why.
+Be specific. Name the winner. State the evidence from the data above.
+"""
+
+    model = genai.GenerativeModel(MODEL)
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=512)
+    )
+    return response.text.strip()
+
+
+async def answer_followup(brief: dict, question: str, search_history: list) -> str:
     context = f"Intelligence Brief:\n{json.dumps(brief, indent=2)}\n\nSearch History:\n"
     for entry in search_history[-5:]:
         context += f"=== {entry['tool'].upper()} ===\n{entry['result']}\n\n"
-
     model = genai.GenerativeModel(MODEL)
-    response = await model.generate_content_async(
+    response = model.generate_content(
         f"You are Rivalyze. Answer the user's question using ONLY the provided intelligence brief and search data. Be concise, cite sources. If info not available, say so.\n\nContext:\n{context}\n\nQuestion: {question}",
         generation_config=genai.GenerationConfig(temperature=0.3, max_output_tokens=1024)
     )
     return response.text.strip()
 
 
-def generate_pdf(brief: Dict) -> bytes:
-    """Generate PDF report from brief."""
+def generate_pdf(brief: dict) -> bytes:
     from fpdf import FPDF
 
     class PDF(FPDF):
@@ -266,7 +266,6 @@ def generate_pdf(brief: Dict) -> bytes:
         def bullet(self, text):
             self.set_font("Helvetica", "", 10)
             self.set_text_color(30)
-            x = self.get_x()
             self.cell(8, 5, chr(8226))
             self.multi_cell(0, 5, text)
             self.ln(1)
@@ -279,6 +278,14 @@ def generate_pdf(brief: Dict) -> bytes:
     pdf.section_title("Executive Summary")
     pdf.body_text(brief.get("summary", "N/A"))
     pdf.body_text(f"Market Position: {brief.get('market_position', 'N/A')}")
+
+    # Rivalry Score in PDF
+    rs = brief.get("rivalry_score", {})
+    if rs:
+        pdf.section_title("Rivalry Score")
+        pdf.body_text(f"Total: {rs.get('total', 0)}/100")
+        for axis in ["hiring_velocity", "news_momentum", "pricing_aggression", "brand_reach", "web_authority"]:
+            pdf.body_text(f"  {axis.replace('_', ' ').title()}: {rs.get(axis, 0)}/20")
 
     pdf.section_title("Sentiment Analysis")
     sentiment = brief.get("sentiment", "neutral")
@@ -326,14 +333,3 @@ def generate_pdf(brief: Dict) -> bytes:
     pdf.body_text(", ".join(brief.get("top_sources", [])))
 
     return pdf.output(dest="S").encode("latin-1")
-
-
-async def run_agent(company: str) -> Dict:
-    """Main entry: agentic analysis for single company."""
-    orchestrator = AgenticOrchestrator(company)
-    return await orchestrator.run_agentic_analysis()
-
-
-async def run_comparative(company: str) -> Dict:
-    """Main entry: comparative analysis with competitors."""
-    return await run_comparative_analysis(company)
