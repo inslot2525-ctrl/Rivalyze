@@ -18,7 +18,7 @@ Let the replay run. Point at the search rows as they arrive.
 
 ## 0:50 — Forecasts
 
-Read the cosmetic-economies forecast. Click receipt `J5`.
+On the Next moves tab, read the cosmetic-economies forecast and click its "View receipts" link.
 
 "The forecast is that Duolingo launches in-game cosmetics. Here is why: this is the actual job posting, a Gaming Partnerships Producer with cosmetic-economy experience. Every claim opens the search result behind it. Confidence is capped by how many independent signals agree, so a forecast resting on one signal can't go above 55 percent."
 
@@ -26,13 +26,17 @@ Read the cosmetic-economies forecast. Click receipt `J5`.
 
 "On the left, what the coverage says. On the right, what the signals show. This one is marked a contradiction."
 
-## 1:30 — Numbers
+## 1:20 — Standing (open the Figma recorded scan, Standing tab)
+
+"Type Figma and it finds the rivals itself, from what people search after 'Figma vs'. The scorecard ranks Figma against Canva, Adobe and the rest on demand, hiring and patents. Figma is second of five on search demand and first on fresh postings. These ranks are computed, not written by the model."
+
+## 1:30 — Numbers (Signals tab)
 
 Scroll to the trend chart and hiring mix.
 
 "These numbers are computed in code from the search data. One Google Trends call puts the company and four rivals on the same scale."
 
-## 1:45 — Ask
+## 1:45 — Ask (Ask tab)
 
 Type: "Has Duolingo announced any acquisition in the last month?"
 
@@ -40,9 +44,9 @@ Type: "Has Duolingo announced any acquisition in the last month?"
 
 ## 2:05 — Quota and replay
 
-Point at the header counter, then the Method section.
+Point at the header counter, then open the Sources tab.
 
-"This was built on a free SerpApi plan, so searches are cached and budgeted. A first scan costs about twelve searches and a repeat costs almost none. The three recorded scans in the repo run with no API key."
+"This was built on a free SerpApi plan, so searches are cached and budgeted. A first scan costs about fourteen searches and a repeat costs almost none. The four recorded scans in the repo run with no API key."
 
 ## 2:20 — Close
 
