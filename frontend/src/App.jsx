@@ -39,7 +39,7 @@ export default function App() {
   useEffect(() => {
     if (view === 'scanning') return
     const hash = view === 'report' && report ? `#/scan/${report.id}` : ''
-    if (window.location.hash !== hash) window.history.replaceState(null, '', hash || window.location.pathname)
+    if (window.location.hash !== hash) window.history.replaceState(null, '', hash || window.location.pathname + window.location.search)
   }, [view, report])
   useEffect(() => () => stop.current?.(), [])
 
@@ -83,21 +83,19 @@ export default function App() {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-20 border-b border-line bg-bg/85 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-5 py-3">
-          <button onClick={home} className="font-display text-lg font-bold tracking-tight text-ink">
-            Rivalyze<span className="text-accent">.</span>
-          </button>
-          <p className="font-mono text-[11px] text-ink-3">
+      <header className="sticky top-0 z-20 border-b border-line bg-bg/90 backdrop-blur">
+        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
+          <button onClick={home} className="font-display text-2xl text-ink">Rivalyze</button>
+          <p className="text-xs text-ink-3">
             {usage?.live
-              ? `SerpApi ${usage.plan || ''} · ${usage.searches_left ?? '?'} searches left`
-              : usage ? 'Replay mode · no SerpApi key' : ''}
+              ? `${usage.searches_left ?? '?'} SerpApi searches left`
+              : usage ? 'Replay mode' : ''}
           </p>
         </div>
       </header>
 
       {offline && (
-        <p role="alert" className="mx-auto mt-6 max-w-4xl rounded-lg border border-bad/50 bg-bad/10 px-4 py-3 text-sm text-ink">
+        <p role="alert" className="mx-auto mt-6 max-w-3xl rounded-xl border border-bad/30 bg-bad/5 px-5 py-3 text-sm text-ink">
           Can't reach the Rivalyze API. Start it with <code className="font-mono text-xs">uvicorn main:app --port 8000</code> in <code className="font-mono text-xs">backend/</code>, then reload.
         </p>
       )}
