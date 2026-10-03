@@ -14,7 +14,7 @@ Let the replay run. Point at the search rows as they arrive.
 
 ## 0:40 — The headline and the counters
 
-"157 search results became evidence, across nine SerpApi engines. Sixteen claims were checked and all sixteen kept their citations."
+"166 search results became evidence, across nine SerpApi engines. Fifteen claims were checked and all fifteen kept their citations."
 
 ## 0:50 — Forecasts
 
@@ -24,7 +24,7 @@ On the Next moves tab, read the cosmetic-economies forecast and click its "View 
 
 ## 1:15 — Say vs do
 
-"On the left, what the coverage says. On the right, what the signals show. This one is marked a contradiction."
+"On the left, what the coverage says. On the right, what the signals show. Each pair is marked consistent, tension or contradiction."
 
 ## 1:20 — Standing (open the Figma recorded scan, Standing tab)
 
