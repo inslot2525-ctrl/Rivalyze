@@ -60,7 +60,8 @@ Rules
 - Say vs Do: "says" cites narrative or web evidence. "does" cites hiring, rnd, ads, demand, market,
   doubts or ai_view evidence. Look for where the two diverge, and say plainly when they agree.
 - Forecasts are falsifiable moves: a launch, a market entry, a pricing change, an acquisition area,
-  a hiring slowdown. Not vague trends. Give each a counter-move a competitor can start this week.
+  a hiring slowdown. Not vague trends. Give each a counter-move the reader can start this week.
+  The reader competes with the target: address them as "you", and do not assign moves to named rivals.
 - News may contain articles about something else with the same name. Ignore those.
 - Rival reads compare the rival against the target using the rival's own evidence.
 - Plain language. No hype, no filler."""
@@ -284,7 +285,8 @@ class Scan:
             roles = m.get("hiring") if name == company else None
             if name in deep_rivals and results.get(f"jobs:{name}"):
                 roles = analytics.hiring_stats(results[f"jobs:{name}"]["roles"])
-            if roles:
+            # An empty sample means the search matched nothing, so it is left out rather than shown as zero.
+            if roles and roles["sample_size"]:
                 row.update(hiring_sample=roles["sample_size"], by_function=roles["by_function"],
                            posted_last_7_days=roles["posted_last_7_days"],
                            top_function=(roles["by_function"] or [{}])[0].get("name"))

@@ -89,7 +89,7 @@ def root():
 @app.get("/health")
 async def health():
     return {"status": "ok", "live_search": settings.live, "llm": bool(settings.gemini_api_key),
-            "demos": len(storage.list_demos())}
+            "demos": len(storage.list_demos()), "scan_budget": settings.scan_search_budget}
 
 
 @app.get("/usage")
@@ -148,13 +148,17 @@ async def scans(limit: int = Query(20, ge=1, le=100)):
     return await storage.list_scans(limit)
 
 
+def _demo_report(demo: dict) -> dict:
+    return {**demo["report"], "id": f"demo:{demo['slug']}", "replay": True, "changes": []}
+
+
 async def _report(ref: str) -> dict:
     """`ref` is a scan id, or `demo:<slug>` for a recorded demo."""
     if ref.startswith("demo:"):
         demo = storage.load_demo(ref[5:])
         if not demo:
             raise HTTPException(404, "Demo not found")
-        return demo["report"]
+        return _demo_report(demo)
     record = await storage.get_scan(ref)
     if not record:
         raise HTTPException(404, "Scan not found")
@@ -193,8 +197,7 @@ async def demo_stream(slug: str, speed: float = Query(6.0, ge=1, le=50)):
             await asyncio.sleep(min(max(event["t"] - last, 0) / speed, 1.2))
             last = event["t"]
             yield sse({**event, "replay": True})
-        yield sse({"type": "report", "report": {**demo["report"], "id": f"demo:{demo['slug']}",
-                                                "replay": True, "changes": []}})
+        yield sse({"type": "report", "report": _demo_report(demo)})
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers=SSE_HEADERS)
 

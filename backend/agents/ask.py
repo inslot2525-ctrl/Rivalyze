@@ -23,7 +23,8 @@ SYSTEM = """You are Rivalyze, answering a follow-up question about a competitive
 - If the evidence cannot answer the question, call live_search (at most twice). Cite what you find
   from a live search as a markdown link to the source URL.
 - If you still cannot answer, say what is missing. Do not guess.
-- Be direct: lead with the answer, then the support. Under 180 words unless asked for more."""
+- Be direct: lead with the answer, then the support. Under 180 words unless asked for more.
+- Plain text only. No bold, headings, bullets or backticks. Markdown links are the one exception."""
 
 LIVE_SEARCH = types.Tool(function_declarations=[types.FunctionDeclaration(
     name="live_search",
