@@ -67,7 +67,7 @@ async def test_rival_jobs_are_filed_under_the_rival(collect, store):
 
 async def test_patents_and_ads_and_finance(collect, store):
     patents = await collect.patents("Notion", "Notion Labs, Inc.")  # suffix must be stripped
-    assert patents["filings"] and patents["cpc"]
+    assert patents["filings"] and patents["cpc"] and patents["single_owner"]
     ads = await collect.ads("Notion", "notion.so")
     assert ads["ads"] and ads["others_targeting_domain"] > 0
     assert all("Notion" in a["advertiser"] for a in ads["ads"])
@@ -95,6 +95,28 @@ async def test_trend_stats_measure_recent_change():
     series = [{"date": f"w{i}", "A": 80} for i in range(48)] + [{"date": f"r{i}", "A": 60} for i in range(4)]
     (s,) = analytics.trend_stats(series, ["A"])
     assert s["baseline_average"] == 80 and s["recent_average"] == 60 and s["change_pct"] == -25.0
+
+
+async def test_scorecard_ranks_only_what_it_can_compare():
+    compare = [{"name": "A", "trend_average": 50, "patents_total": 10},
+               {"name": "B", "trend_average": 80},
+               {"name": "C", "trend_average": 50, "patents_total": 40}]
+    card = analytics.scorecard(compare, "A")
+    demand, patents = card["rows"]
+    assert (demand["leader"], demand["target_rank"], demand["of"]) == ("B", 2, 3)  # tie shares rank 2
+    assert (patents["leader"], patents["target_rank"], patents["of"]) == ("C", 2, 2)  # B is left out
+    assert card["leads"] == 0 and card["measures"] == 2
+
+    ahead, behind = analytics.standing_points(card, "A")
+    assert ahead == [] and [b["versus"] for b in behind] == ["B", "C"]
+    assert behind[0]["point"] == "Search demand: B leads at 80. A is 2nd of 3 at 50."
+    ahead, _ = analytics.standing_points(analytics.scorecard(compare, "B"), "B")
+    assert ahead[0]["point"] == "Search demand: B leads at 80, ahead of A at 50."
+
+
+async def test_thin_trends_have_no_momentum():
+    series = [{"date": f"w{i}", "A": 1} for i in range(52)]
+    assert analytics.trend_stats(series, ["A"])[0]["change_pct"] is None
 
 
 async def test_news_velocity():
@@ -174,6 +196,16 @@ async def test_scan_runs_offline_end_to_end(serp, fake_llm):
     assert report["metrics"]["ads"]["own_creatives"] > 0
     assert report["metrics"]["compare"][1]["name"] == "Confluence"
     assert report["metrics"]["compare"][1]["hiring_sample"] > 0
+
+    card = report["metrics"]["scorecard"]
+    assert card["rows"][0]["label"] == "Search demand" and card["rows"][0]["leader"] == "Notion"
+    standing = a["standing"]
+    assert standing["verdict"].endswith("fresh postings.")  # the invented [Z9] is scrubbed
+    assert standing["ahead"][0]["point"].startswith("Search demand: Notion leads at")
+    points = standing["ahead"] + standing["behind"]
+    assert all(p["evidence_ids"] and all(i in report["evidence"] for i in p["evidence_ids"]) for p in points)
+    assert report["metrics"]["compare"][1]["employer"] == "Atlassian"
+    assert "## Where it stands" in battlecard(report)
 
     card = battlecard(report)
     assert "## What they will do next" in card and "## Receipts" in card and "**J1**" in card

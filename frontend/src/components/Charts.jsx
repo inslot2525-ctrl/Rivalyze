@@ -68,7 +68,9 @@ export function TrendChart({ trends }) {
               </td>
               <td className="text-right font-mono text-xs text-ink-2">{s.average}</td>
               <td className="text-right font-mono text-xs text-ink-2">{s.recent_average}</td>
-              <td className="text-right font-mono text-xs text-ink">{s.change_pct > 0 ? '▲' : s.change_pct < 0 ? '▼' : ''} {Math.abs(s.change_pct)}%</td>
+              <td className="text-right font-mono text-xs text-ink">
+                {s.change_pct == null ? '—' : `${s.change_pct > 0 ? '▲' : s.change_pct < 0 ? '▼' : ''} ${Math.abs(s.change_pct)}%`}
+              </td>
             </tr>
           ))}
         </tbody>

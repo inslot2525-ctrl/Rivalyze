@@ -96,4 +96,6 @@ def ground(analysis: Analysis, store: EvidenceStore) -> tuple[dict, dict]:
             continue
         out["rivals"].append({**rival.model_dump(), "evidence_ids": ids})
 
+    out["standing"] = {"verdict": analysis.standing}
+
     return _scrub_all(out, store), stats

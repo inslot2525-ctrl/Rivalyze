@@ -3,6 +3,7 @@ import { API, getJSON, remove, sendJSON } from '../api'
 import AskPanel from './AskPanel'
 import { HiringMix, SignalNumbers, TrendChart } from './Charts'
 import { SearchRow } from './ScanTrace'
+import Standing from './Standing'
 import { Button, Card, Cited, Eyebrow, ReceiptLink, Section, signalLabel } from './ui'
 
 const VERDICT = {
@@ -99,8 +100,8 @@ export default function Report({ report, onOpen, onNew }) {
   const kept = grounding.claims_checked - grounding.claims_dropped
   const tabs = [
     ['brief', 'Next moves'],
+    ...(report.rivals.length ? [['rivals', 'Standing']] : []),
     ['signals', 'Signals'],
-    ...(a.rivals.length ? [['rivals', 'Rivals']] : []),
     ['ask', 'Ask'],
     ['sources', 'Sources'],
   ]
@@ -197,8 +198,12 @@ export default function Report({ report, onOpen, onNew }) {
         )}
 
         {tab === 'rivals' && (
-          <Section title="Against its rivals"
-            hint={`Chosen from what people type after “${report.query} vs” in Google: ${report.rival_candidates.slice(0, 6).join(', ')}.`}>
+          <>
+          <Section title={`Where ${report.company} stands`}
+            hint={`Measured against ${report.rivals.join(', ')}. Rivals are chosen from what people type after “${report.query} vs” in Google.`}>
+            <Standing report={report} onOpen={onOpen} />
+          </Section>
+          <Section title="Rival by rival">
             <div className="grid gap-5 md:grid-cols-2">
               {a.rivals.map((r) => (
                 <Card key={r.name}>
@@ -210,6 +215,7 @@ export default function Report({ report, onOpen, onNew }) {
             </div>
             <div className="mt-5"><TrendChart trends={metrics.trends} /></div>
           </Section>
+          </>
         )}
 
         {tab === 'ask' && (

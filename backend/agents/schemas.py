@@ -131,4 +131,6 @@ class Analysis(BaseModel):
     say_vs_do: list[SayVsDo]
     forecasts: list[Forecast]
     rivals: list[RivalRead]
+    standing: str = Field(description="Two sentences: where the target stands among its rivals and why, "
+                                      "consistent with METRICS.scorecard")
     open_questions: list[str] = Field(description="What the evidence could not settle")

@@ -75,6 +75,9 @@ def news_stats(iso_dates: list[str], sources: list[str], now: Optional[datetime]
     }
 
 
+MIN_TREND_BASELINE = 3
+
+
 def trend_stats(series: list[dict], terms: list[str], recent_weeks: int = 4) -> list[dict]:
     """Per term: 12-month average, last-4-week average, and the change between them."""
     out = []
@@ -90,7 +93,8 @@ def trend_stats(series: list[dict], terms: list[str], recent_weeks: int = 4) -> 
             "average": round(sum(values) / len(values), 1),
             "recent_average": round(r_avg, 1),
             "baseline_average": round(b_avg, 1),
-            "change_pct": round((r_avg - b_avg) / b_avg * 100, 1) if b_avg else 0.0,
+            # Low on the index there is too little search volume for a change to mean anything.
+            "change_pct": round((r_avg - b_avg) / b_avg * 100, 1) if b_avg >= MIN_TREND_BASELINE else None,
             "peak_week": series[peak].get("date", ""),
         })
     return out
@@ -107,6 +111,61 @@ def patent_stats(filings: list[dict], cpc: list[dict], total: int, now: Optional
         "filed_last_12_months": sum(1 for d in dates if d >= cutoff),
         "top_classes": cpc,
     }
+
+
+# (key in a compare row, label, unit, note shown under the label, signal its receipts come from)
+SCORECARD = [
+    ("trend_average", "Search demand", "", "12-month average on Google's 0-100 index", "demand"),
+    ("trend_change_pct", "Demand momentum", "%", "last 4 weeks against the months before", "demand"),
+    ("posted_last_7_days", "Fresh job postings", "", "posted in the last 7 days, of the sample", "hiring"),
+    ("patents_total", "Patents on file", "", "filings matched to the company", "rnd"),
+    ("patents_recent", "Recent filings", "", "filed in the last 12 months, of the newest shown", "rnd"),
+]
+ORDINAL = ["1st", "2nd", "3rd", "4th", "5th"]
+
+
+def scorecard(compare: list[dict], target: str) -> dict:
+    """Rank the target against its rivals on every measure the scan could compute for both.
+
+    A company with no value for a measure is left out of that row, never counted as zero.
+    """
+    rows = []
+    for key, label, unit, note, signal in SCORECARD:
+        values = [{"name": c["name"], "value": c[key]} for c in compare if c.get(key) is not None]
+        if len(values) < 2 or not any(v["name"] == target for v in values):
+            continue
+        ranked = sorted(values, key=lambda v: v["value"], reverse=True)
+        mine = next(v["value"] for v in values if v["name"] == target)
+        rows.append({
+            "key": key, "label": label, "unit": unit, "note": note, "signal": signal, "values": values,
+            "leader": ranked[0]["name"],
+            # Ties share the better rank.
+            "target_rank": 1 + sum(1 for v in values if v["value"] > mine),
+            "of": len(values),
+        })
+    return {"rows": rows, "leads": sum(1 for r in rows if r["target_rank"] == 1), "measures": len(rows)}
+
+
+def standing_points(card: dict, target: str) -> tuple[list[dict], list[dict]]:
+    """Turn the scorecard into (ahead, behind) statements. Written in code, so they cannot overclaim."""
+    ahead, behind = [], []
+    for row in card["rows"]:
+        ranked = sorted(row["values"], key=lambda v: v["value"], reverse=True)
+        mine = next(v["value"] for v in row["values"] if v["name"] == target)
+        unit = row["unit"]
+        if row["target_rank"] == 1:
+            runner = next((v for v in ranked if v["name"] != target), None)
+            if runner is None or runner["value"] == mine:
+                continue  # a tie is not a lead
+            ahead.append({"measure": row["key"], "signal": row["signal"], "versus": runner["name"],
+                          "point": f"{row['label']}: {target} leads at {mine}{unit}, ahead of "
+                                   f"{runner['name']} at {runner['value']}{unit}."})
+        else:
+            top = ranked[0]
+            behind.append({"measure": row["key"], "signal": row["signal"], "versus": top["name"],
+                           "point": f"{row['label']}: {top['name']} leads at {top['value']}{unit}. {target} is "
+                                    f"{ORDINAL[row['target_rank'] - 1]} of {row['of']} at {mine}{unit}."})
+    return ahead, behind
 
 
 def ads_stats(ads: list[dict], now: Optional[datetime] = None) -> dict:

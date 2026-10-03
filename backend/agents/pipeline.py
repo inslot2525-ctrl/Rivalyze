@@ -64,6 +64,9 @@ Rules
   The reader competes with the target: address them as "you", and do not assign moves to named rivals.
 - News may contain articles about something else with the same name. Ignore those.
 - Rival reads compare the rival against the target using the rival's own evidence.
+- Standing is two sentences on where the target sits among its rivals. Base it on METRICS.scorecard,
+  quote the numbers, and never claim a lead the scorecard does not show. Note that hiring and patent
+  figures belong to the rival's employer, which may be a much larger company than the product.
 - Plain language. No hype, no filler."""
 
 
@@ -160,9 +163,11 @@ class Scan:
         for rival in picked[:settings.max_rivals]:
             # Search and match on the employer, so "Confluence" finds Atlassian's roles.
             tasks[f"jobs:{rival.name}"] = self.collect.jobs(rival.employer or rival.name, subject=rival.name)
+            tasks[f"patents:{rival.name}"] = self.collect.patents(rival.name, rival.employer or rival.name)
         results = dict(zip(tasks, await asyncio.gather(
             *[self._safe(name, coro) for name, coro in tasks.items()])))
-        self._compute_metrics(company, rivals, deep_rivals, results)
+        self._compute_metrics(company, rivals, deep_rivals, results,
+                              {r.name: r.employer or r.name for r in picked})
 
         if settings.max_followups and self.serp.remaining:
             await self.emit("stage", stage="critique", text="Looking for gaps in the evidence")
@@ -192,12 +197,13 @@ class Scan:
             f"{json.dumps(self._metrics_for_llm(), ensure_ascii=False, indent=1)}\n\n"
             f"EVIDENCE:\n{self.store.digest()}\n\n"
             f"Produce 6-9 tells covering every signal that has evidence, 2-3 say-vs-do items, "
-            f"3-4 forecasts and one read for each of: "
+            f"3-4 forecasts, the standing, and one rival read for each of: "
             f"{', '.join(deep_rivals) or 'no rivals'}.",
             Analysis, temperature=0.35)
 
         await self.emit("stage", stage="ground", text="Checking every claim against its receipts")
         grounded, grounding = ground(analysis, self.store)
+        grounded["standing"].update(self._standing(company))
         await self.emit("grounding", **grounding)
 
         report = self._report(plan, rivals, candidates, grounded, grounding)
@@ -249,7 +255,8 @@ class Scan:
 
     # ---- assembly ----------------------------------------------------------
 
-    def _compute_metrics(self, company: str, rivals: list[str], deep_rivals: list[str], results: dict):
+    def _compute_metrics(self, company: str, rivals: list[str], deep_rivals: list[str], results: dict,
+                         employers: dict):
         m = self.metrics
         if results.get("jobs"):
             m["hiring"] = analytics.hiring_stats(results["jobs"]["roles"])
@@ -268,17 +275,18 @@ class Scan:
             stats = analytics.trend_stats(t["series"], t["terms"])
             m["trends"] = {"terms": t["terms"], "series": t["series"], "stats": stats, "link": t["link"]}
             for s in stats:
-                direction = "up" if s["change_pct"] > 0 else "down"
+                change = s["change_pct"]
+                moved = "too little volume to measure a change" if change is None else \
+                    f"{'up' if change > 0 else 'down'} {abs(change)}%"
                 self.store.add("demand", subject=s["term"], engine="google_trends", query=t["query"],
                                title=f"Search interest in {s['term']}: {s['recent_average']} over the last "
-                                     f"4 weeks vs {s['baseline_average']} before ({direction} "
-                                     f"{abs(s['change_pct'])}%)",
+                                     f"4 weeks vs {s['baseline_average']} before ({moved})",
                                snippet=f"12-month average {s['average']} on Google's 0-100 scale, shared "
                                        f"across {', '.join(t['terms'])}. Peak week: {s['peak_week']}.",
                                link=t["link"], source="Google Trends", extra=s)
         compare = []
         for name in [company] + rivals:
-            row = {"name": name}
+            row = {"name": name, "employer": employers.get(name, name)}
             trend = next((s for s in (m.get("trends") or {}).get("stats", []) if s["term"] == name), None)
             if trend:
                 row.update(trend_average=trend["average"], trend_change_pct=trend["change_pct"])
@@ -290,8 +298,23 @@ class Scan:
                 row.update(hiring_sample=roles["sample_size"], by_function=roles["by_function"],
                            posted_last_7_days=roles["posted_last_7_days"],
                            top_function=(roles["by_function"] or [{}])[0].get("name"))
+            filed = results.get("patents") if name == company else results.get(f"patents:{name}")
+            if filed and filed["filings"] and filed["single_owner"]:
+                stats = analytics.patent_stats(filed["filings"], filed["cpc"], filed["total"])
+                row.update(patents_total=stats["total_matching"], patents_recent=stats["filed_last_12_months"],
+                           latest_filing=stats["latest_filing"])
             compare.append(row)
         m["compare"] = compare
+        m["scorecard"] = analytics.scorecard(compare, company)
+
+    def _standing(self, company: str) -> dict:
+        """Where the target leads and trails, read off the scorecard with the receipts attached."""
+        ahead, behind = analytics.standing_points(self.metrics.get("scorecard") or {"rows": []}, company)
+        for point in ahead + behind:
+            ids = [e.id for name in (company, point.pop("versus"))
+                   for e in self.store.by_signal(point["signal"], name)[:3]]
+            point["evidence_ids"] = ids
+        return {"ahead": ahead, "behind": behind}
 
     def _metrics_for_llm(self) -> dict:
         """Everything except the raw weekly series, which the model does not need."""

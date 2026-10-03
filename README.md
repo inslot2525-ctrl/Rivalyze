@@ -16,7 +16,7 @@ Type a competitor's name. In about a minute you get:
 - **Say vs do.** What the press coverage claims next to what hiring, patents, ads and demand actually show, marked consistent, tension or contradiction.
 - **Tells.** Findings grouped by signal, each with its receipts.
 - **Numbers.** Twelve months of search demand against rivals, hiring mix by function, patent activity, ad creatives and financials. These are computed in code from the search results, not estimated by the model.
-- **Rivals.** Chosen from what people type after "*company* vs" in Google, then compared on the same signals.
+- **Standing.** A scorecard of the company against its rivals on search demand, demand momentum, fresh job postings, patents on file and recent filings, with its rank on each and a plain list of where it is ahead and where a rival is. Rivals are chosen from what people type after "*company* vs" in Google. The ranks and the ahead/behind statements are written by code from the numbers, so they can't overclaim.
 - **Ask.** Follow-up questions answered from the scan's evidence, with live searches when the evidence falls short.
 - **Battlecard export** in Markdown, and a **watchlist** that rescans daily and lists what changed.
 
@@ -24,13 +24,14 @@ Examples from the recorded scans in this repo:
 
 | Company | What the signals showed |
 |---|---|
+| Figma | Second of five on search demand, far behind Canva (5.6 against 74.7 on Google's index), first on fresh job postings, and repositioning from design canvas to AI coding platform. |
 | Duolingo | Postings for "Gaming Partnerships Producers" with cosmetic-economy experience and a Director of Ad Platform Operations, while R&D spend grows faster than revenue. Forecast: in-game cosmetics and a rebuilt ad tier. |
 | Notion | Press coverage says "AI agent platform". Hiring says Android mobile core and offline reliability. Notion shut down its email client while holding a June 2025 patent on backend email systems. |
 | Tesla | Patents concentrate on battery chemistry and vision-only autonomy while R&D expenses climb and search interest in BYD rises. |
 
 ## Try it without any API key
 
-Three real scans are recorded in `backend/demos/`. They replay step by step and spend no searches.
+Four real scans are recorded in `backend/demos/`. They replay step by step and spend no searches.
 
 ```bash
 git clone https://github.com/inslot2525-ctrl/Rivalyze
@@ -84,7 +85,7 @@ Rivalyze was built on a free SerpApi plan, so the search budget is part of the d
 
 - Every response is cached on disk by a hash of the engine and parameters, with a freshness window per engine (12 hours for news, 14 days for patents).
 - The research plan for a company is cached too, so a rescan issues the same queries and hits the cache.
-- A scan has a hard budget (`SCAN_SEARCH_BUDGET`, default 15). A typical first scan uses 11 or 12 searches; a repeat uses 0 to 3.
+- A scan has a hard budget (`SCAN_SEARCH_BUDGET`, default 15). A typical first scan uses 13 or 14 searches; a repeat uses 0 to 3.
 - With no key set, the app runs in replay mode: cached searches and recorded demos still work.
 - The header shows your remaining searches, read from SerpApi's free account endpoint.
 
@@ -157,7 +158,7 @@ cd backend
 pytest
 ```
 
-Twenty tests run offline against recorded SerpApi responses in `backend/tests/fixtures`. They cover the cache and budget, each collector, the analytics, the grounding rules and a full scan with a stubbed model.
+Twenty-two tests run offline against recorded SerpApi responses in `backend/tests/fixtures`. They cover the cache and budget, each collector, the analytics, the scorecard, the grounding rules and a full scan with a stubbed model.
 
 ## Project layout
 
@@ -184,7 +185,8 @@ frontend/
 ## Limits
 
 - Google Jobs returns about ten postings per search. Hiring findings describe the mix of a sample, not a headcount, and the report says so.
-- A rival whose postings can't be matched to an employer is left out of the hiring comparison rather than shown as zero.
+- A rival whose postings can't be matched to an employer is left out of the hiring comparison rather than shown as zero. The same goes for patents when a short name such as "Coda" matches several unrelated owners.
+- Hiring and patent figures for a product belong to the company behind it (Adobe for Adobe XD), and the scorecard says so.
 - Google Trends terms that are also common words ("Notion", "Coda") include unrelated searches.
 - Forecasts are inferences from public signals. The receipts are there so you can check them.
 

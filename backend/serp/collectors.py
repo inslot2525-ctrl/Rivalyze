@@ -190,10 +190,11 @@ class Collectors:
         label = f"assignee:{assignee}" + (f" {query}" if query else "")
         data, meta, ctx = await self._search("google_patents", "rnd", company, label, **params)
         first = _norm(assignee).split(" ")[0] if assignee else ""
-        filings = []
+        filings, owners = [], []
         for p in data.get("organic_results", []):
             if first and first not in _norm(p.get("assignee", "")):
                 continue
+            owners.append(_core_name(p.get("assignee", "")))
             filings.append({"title": p.get("title", ""), "filing_date": p.get("filing_date", "")})
             self.store.add("rnd", subject=company, engine="google_patents", query=label,
                            title=p.get("title", ""), snippet=(p.get("snippet") or "").strip(" …"),
@@ -204,7 +205,10 @@ class Collectors:
         cpc = [{"code": c.get("key"), "share": c.get("percentage")}
                for c in (data.get("summary") or {}).get("cpc", []) if c.get("key") != "Total"]
         await self._done(meta, ctx, len(filings))
-        return {"filings": filings, "cpc": cpc[:6],
+        # A short name such as "Coda" also matches unrelated companies. When the results are not
+        # mostly one owner, the total cannot be attributed and callers should not compare on it.
+        top = max((owners.count(o) for o in set(owners)), default=0)
+        return {"filings": filings, "cpc": cpc[:6], "single_owner": bool(owners) and top / len(owners) >= 0.7,
                 "total": (data.get("search_information") or {}).get("total_results", 0)}
 
     # ---- follow-ups the critic can ask for ---------------------------------
@@ -270,6 +274,15 @@ class Collectors:
         n = self._ai_blocks(data, company, "google_ai_mode", question, "Google AI Mode", limit=10)
         await self._done(meta, ctx, n)
         return {"blocks": n}
+
+
+CORPORATE = {"inc", "llc", "ltd", "corp", "corporation", "co", "plc", "gmbh", "pty", "us", "usa", "ip",
+             "holdings", "limited", "technologies", "technology", "international", "company"}
+
+
+def _core_name(assignee: str) -> str:
+    """'Atlassian Pty Ltd' and 'Atlassian US, Inc.' are the same owner."""
+    return " ".join(w for w in _norm(assignee).split() if w not in CORPORATE)
 
 
 def _ts(value) -> str:

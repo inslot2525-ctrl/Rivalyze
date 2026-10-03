@@ -79,6 +79,7 @@ def analysis():
                      confidence=90, evidence_ids=["J1"], counter_move="Watch."),
         ],
         rivals=[RivalRead(name="Confluence", edge="More deal-desk hiring.", evidence_ids=["T2"])],
+        standing="Notion leads on search demand [T1] and trails Confluence on fresh postings [Z9].",
         open_questions=["Pricing changes?"],
     )
 

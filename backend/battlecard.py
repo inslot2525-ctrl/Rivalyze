@@ -47,6 +47,25 @@ def battlecard(report: dict) -> str:
                    f"{_refs(t['evidence_ids'])}")
     out.append("")
 
+    standing = a.get("standing")
+    card = report["metrics"].get("scorecard") or {}
+    if standing and (standing.get("ahead") or standing.get("behind") or card.get("rows")):
+        out += ["## Where it stands", "", standing["verdict"], ""]
+        if card.get("rows"):
+            names = [c["name"] for c in report["metrics"]["compare"]]
+            out += ["| Measure | " + " | ".join(names) + " |", "|---|" + "---|" * len(names)]
+            for row in card["rows"]:
+                by_name = {v["name"]: v["value"] for v in row["values"]}
+                cells = [f"**{by_name[n]}{row['unit']}**" if n == row["leader"] else
+                         (f"{by_name[n]}{row['unit']}" if n in by_name else "—") for n in names]
+                out.append(f"| {row['label']} | " + " | ".join(cells) + " |")
+            out.append("")
+        for title, side in (("Ahead", "ahead"), ("Behind", "behind")):
+            for p in standing.get(side, []):
+                note(p["evidence_ids"])
+                out.append(f"- **{title}.** {p['point']}")
+        out.append("")
+
     if a["rivals"]:
         out += ["## Against its rivals", ""]
         for r in a["rivals"]:
