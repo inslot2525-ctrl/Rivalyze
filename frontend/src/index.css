@@ -50,6 +50,14 @@ button:disabled { cursor: not-allowed; }
 @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 .blink { animation: blink 1.4s ease-in-out infinite; }
 
+@page { size: A4; margin: 16mm 15mm; }
+@media print {
+  html, body { background: #fff; }
+  /* Keep the tinted panels and accent colour when printing. */
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  a { text-decoration: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .rise, .blink { animation: none; }

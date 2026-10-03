@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { API, getJSON, remove, sendJSON } from '../api'
+import { getJSON, remove, sendJSON } from '../api'
 import AskPanel from './AskPanel'
 import { HiringMix, SignalNumbers, TrendChart } from './Charts'
 import { SearchRow } from './ScanTrace'
@@ -93,7 +93,7 @@ function WatchButton({ company, disabled }) {
   )
 }
 
-export default function Report({ report, onOpen, onNew }) {
+export default function Report({ report, onOpen, onNew, onExport }) {
   const a = report.analysis
   const { usage, grounding, metrics, evidence } = report
   const [tab, setTab] = useState(new URLSearchParams(window.location.search).get('tab') || 'brief')
@@ -115,10 +115,7 @@ export default function Report({ report, onOpen, onNew }) {
             {report.replay ? 'Recorded scan' : 'Scan'} · {new Date(report.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}
           </Eyebrow>
           <div className="flex flex-wrap gap-2">
-            <a href={`${API}/scans/${encodeURIComponent(report.id)}/battlecard.md`} download
-              className="rounded-full border border-line bg-surface px-4 py-2 text-sm font-medium text-ink-2 transition hover:border-ink-3 hover:text-ink">
-              Export battlecard
-            </a>
+            <Button onClick={onExport}>Export battlecard</Button>
             <WatchButton company={report.company} disabled={report.replay} />
             <Button variant="primary" onClick={onNew}>New scan</Button>
           </div>
@@ -148,10 +145,10 @@ export default function Report({ report, onOpen, onNew }) {
       </header>
 
       <nav id="tabs" aria-label="Report sections" className="sticky top-[57px] z-10 -mx-6 mt-12 scroll-mt-[57px] border-b border-line bg-bg/90 px-6 backdrop-blur">
-        <div className="flex gap-7 overflow-x-auto">
+        <div className="flex gap-2 overflow-x-auto py-2.5">
           {tabs.map(([key, label]) => (
             <button key={key} onClick={() => pick(key)} aria-current={tab === key ? 'page' : undefined}
-              className={`-mb-px whitespace-nowrap border-b-2 py-3.5 text-sm font-medium transition ${tab === key ? 'border-ink text-ink' : 'border-transparent text-ink-3 hover:text-ink'}`}>
+              className={`whitespace-nowrap rounded-full px-5 py-2.5 text-[17px] font-medium transition ${tab === key ? 'bg-ink text-white' : 'text-ink-2 hover:bg-raised hover:text-ink'}`}>
               {label}
             </button>
           ))}

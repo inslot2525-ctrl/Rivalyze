@@ -18,7 +18,7 @@ Type a competitor's name. In about a minute you get:
 - **Numbers.** Twelve months of search demand against rivals, hiring mix by function, patent activity, ad creatives and financials. These are computed in code from the search results, not estimated by the model.
 - **Standing.** A scorecard of the company against its rivals on search demand, demand momentum, fresh job postings, patents on file and recent filings, with its rank on each and a plain list of where it is ahead and where a rival is. Rivals are chosen from what people type after "*company* vs" in Google. The ranks and the ahead/behind statements are written by code from the numbers, so they can't overclaim.
 - **Ask.** Follow-up questions answered from the scan's evidence, with live searches when the evidence falls short.
-- **Battlecard export** in Markdown, and a **watchlist** that rescans daily and lists what changed.
+- **Battlecard export** as a print-ready PDF or Markdown, and a **watchlist** that rescans daily and lists what changed.
 
 Examples from the recorded scans in this repo:
 

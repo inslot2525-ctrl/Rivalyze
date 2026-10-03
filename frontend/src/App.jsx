@@ -2,11 +2,12 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { getJSON, openStream } from './api'
 import EvidenceDrawer from './components/EvidenceDrawer'
 import Landing from './components/Landing'
+import PrintBattlecard from './components/PrintBattlecard'
 import Report from './components/Report'
 import ScanTrace from './components/ScanTrace'
 
 export default function App() {
-  const [view, setView] = useState('landing') // landing | scanning | report
+  const [view, setView] = useState('landing') // landing | scanning | report | print
   const [health, setHealth] = useState(null)
   const [usage, setUsage] = useState(null)
   const [demos, setDemos] = useState([])
@@ -33,12 +34,15 @@ export default function App() {
   useEffect(() => {
     const ref = window.location.hash.match(/^#\/scan\/(.+)$/)?.[1]
     const demo = window.location.hash.match(/^#\/demo\/(.+)$/)?.[1]
+    const print = window.location.hash.match(/^#\/print\/(.+)$/)?.[1]
     if (ref) openScan(decodeURIComponent(ref))
+    if (print) openScan(decodeURIComponent(print), 'print')
     if (demo) start(`/demos/${demo}/stream`, demo, true)
   }, [])
   useEffect(() => {
     if (view === 'scanning') return
-    const hash = view === 'report' && report ? `#/scan/${report.id}` : ''
+    const hash = report && view === 'report' ? `#/scan/${report.id}`
+      : report && view === 'print' ? `#/print/${report.id}` : ''
     if (window.location.hash !== hash) window.history.replaceState(null, '', hash || window.location.pathname + window.location.search)
   }, [view, report])
   useEffect(() => () => stop.current?.(), [])
@@ -73,17 +77,17 @@ export default function App() {
     refresh()
   }
 
-  const openScan = async (id) => {
+  const openScan = async (id, target = 'report') => {
     try {
       setReport(await getJSON(`/scans/${encodeURIComponent(id)}`))
-      setView('report')
+      setView(target)
       window.scrollTo(0, 0)
     } catch (e) { setOffline(true) }
   }
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-20 border-b border-line bg-bg/90 backdrop-blur">
+      <header className="sticky top-0 z-20 border-b border-line bg-bg/90 backdrop-blur print:hidden">
         <div className="mx-auto flex h-14 max-w-5xl items-center justify-between px-6">
           <button onClick={home} className="font-display text-2xl text-ink">Rivalyze</button>
           <p className="text-xs text-ink-3">
@@ -110,7 +114,11 @@ export default function App() {
         <ScanTrace company={company} events={events} error={error} replay={replay} onCancel={home} />
       )}
       {view === 'report' && report && (
-        <Report report={report} onOpen={(id) => setDrawer(id)} onNew={home} />
+        <Report report={report} onOpen={(id) => setDrawer(id)} onNew={home}
+          onExport={() => { setDrawer(undefined); setView('print'); window.scrollTo(0, 0) }} />
+      )}
+      {view === 'print' && report && (
+        <PrintBattlecard report={report} onBack={() => { setView('report'); window.scrollTo(0, 0) }} />
       )}
       {view === 'report' && report && drawer !== undefined && (
         <EvidenceDrawer evidence={report.evidence} focus={drawer} onClose={() => setDrawer(undefined)} />
