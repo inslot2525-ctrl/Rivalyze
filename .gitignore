@@ -20,3 +20,6 @@ dist/
 Thumbs.db
 .vscode/
 .idea/
+
+# local search cache
+.cache/

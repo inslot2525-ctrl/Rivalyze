@@ -1,307 +1,301 @@
-import traceback
 import asyncio
+import json
+import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
-from typing import Optional, List
+from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
-from dotenv import load_dotenv
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse, StreamingResponse
+from pydantic import BaseModel, Field
+from sqlalchemy import delete, select
 
-from models import init_db, get_session, CompanySnapshot, Alert, MonitoredCompany, AsyncSessionLocal
-from agents.orchestrator import run_agent, run_comparative, answer_followup, generate_pdf
+import storage
+from agents.ask import ask
+from agents.llm import LLMUnavailable
+from agents.pipeline import Scan, ScanError
+from battlecard import battlecard
+from config import settings
+from models import AsyncSessionLocal, MonitoredCompany, init_db
+from serp.client import account_usage
 
-load_dotenv()
-
+log = logging.getLogger("rivalyze")
 scheduler = AsyncIOScheduler()
 
+# Live scans spend real searches, so only a couple may run at once.
+scan_slots = asyncio.Semaphore(2)
 
-async def run_scheduled_analysis(company: str, user_id: str):
-    """Background job: run analysis, compare with previous, generate alerts."""
+
+def _job_id(company: str) -> str:
+    return f"monitor_{storage.company_key(company)}"
+
+
+async def run_monitored_scan(company: str):
+    """Scheduled job: rescan a watched company. The saved report carries the diff."""
     try:
-        brief = run_agent(company)
-
+        async with scan_slots:
+            scan = Scan(company)
+            report = await scan.run()
+        await storage.save_scan(report, scan.events)
         async with AsyncSessionLocal() as session:
-            # Mark old snapshots as not latest
-            from sqlalchemy import update
-            await session.execute(
-                update(CompanySnapshot)
-                .where(CompanySnapshot.company == company, CompanySnapshot.is_latest == True)
-                .values(is_latest=False)
-            )
-
-            # Save new snapshot
-            snapshot = CompanySnapshot(company=company, brief_json=brief, is_latest=True)
-            session.add(snapshot)
-            await session.flush()
-
-            # Compare with previous latest
-            from sqlalchemy import select
-            prev = await session.execute(
-                select(CompanySnapshot)
-                .where(CompanySnapshot.company == company, CompanySnapshot.is_latest == False)
-                .order_by(CompanySnapshot.created_at.desc())
-                .limit(1)
-            )
-            prev_snapshot = prev.scalar_one_or_none()
-
-            if prev_snapshot:
-                alerts = detect_changes(prev_snapshot.brief_json, brief, snapshot.id)
-                for alert in alerts:
-                    session.add(alert)
-
-            await session.commit()
-    except Exception as e:
-        traceback.print_exc()
-
-
-def detect_changes(old: dict, new: dict, snapshot_id: int) -> List[Alert]:
-    """Detect significant changes between briefs."""
-    alerts = []
-    fields_to_watch = [
-        ("sentiment", "Sentiment shifted"),
-        ("hiring.signal", "Hiring signal changed"),
-        ("finance.price", "Stock price moved"),
-        ("finance.market_cap", "Market cap changed"),
-        ("summary", "Strategic summary updated"),
-    ]
-
-    for field_path, alert_type in fields_to_watch:
-        old_val = get_nested(old, field_path)
-        new_val = get_nested(new, field_path)
-        if old_val != new_val and old_val is not None and new_val is not None:
-            severity = "high" if field_path in ["sentiment", "hiring.signal", "finance.price"] else "medium"
-            alerts.append(Alert(
-                snapshot_id=snapshot_id,
-                alert_type=alert_type,
-                field_changed=field_path,
-                old_value=str(old_val),
-                new_value=str(new_val),
-                severity=severity,
-            ))
-    return alerts
-
-
-def get_nested(d: dict, path: str):
-    keys = path.split(".")
-    for k in keys:
-        if isinstance(d, dict):
-            d = d.get(k)
-        else:
-            return None
-    return d
+            result = await session.execute(select(MonitoredCompany).where(MonitoredCompany.company == company))
+            monitor = result.scalar_one_or_none()
+            if monitor:
+                monitor.last_run = datetime.now(timezone.utc)
+                await session.commit()
+    except Exception:
+        log.exception("Monitored scan failed for %s", company)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     scheduler.start()
+    # Jobs live in memory, so rebuild them from the watchlist on every start.
+    async with AsyncSessionLocal() as session:
+        for m in (await session.execute(select(MonitoredCompany))).scalars():
+            scheduler.add_job(run_monitored_scan, IntervalTrigger(hours=m.frequency_hours),
+                              args=[m.company], id=_job_id(m.company), replace_existing=True)
+            if not m.is_active:
+                scheduler.pause_job(_job_id(m.company))
     yield
-    scheduler.shutdown()
+    scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="Rivalyze API", version="2.0.0", lifespan=lifespan)
-
+app = FastAPI(title="Rivalyze API", version="3.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:5174", "http://localhost:3000"],
+    allow_origins=[o.strip() for o in settings.cors_origins.split(",") if o.strip()],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-class AnalyzeRequest(BaseModel):
-    company: str
-    comparative: bool = False
+def sse(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
-class FollowupRequest(BaseModel):
-    brief: dict
-    question: str
-    search_history: list = []
-
-
-class MonitorRequest(BaseModel):
-    company: str
-    frequency_hours: int = 24
-
-
-class MonitorUpdateRequest(BaseModel):
-    frequency_hours: Optional[int] = None
-    is_active: Optional[bool] = None
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
 
 @app.get("/")
 def root():
-    return {"status": "Rivalyze API v2.0 is running ⚡"}
+    return {"name": "Rivalyze", "version": app.version, "docs": "/docs"}
 
 
-@app.post("/analyze")
-async def analyze(req: AnalyzeRequest):
-    if not req.company.strip():
-        raise HTTPException(status_code=400, detail="Company name is required")
+@app.get("/health")
+async def health():
+    return {"status": "ok", "live_search": settings.live, "llm": bool(settings.gemini_api_key),
+            "demos": len(storage.list_demos())}
+
+
+@app.get("/usage")
+async def usage():
+    return {**await account_usage(), "scan_budget": settings.scan_search_budget}
+
+
+# ---- scans -----------------------------------------------------------------
+
+@app.get("/scan/stream")
+async def scan_stream(company: str = Query(min_length=1, max_length=80), rivals: bool = True):
+    """Run a scan and stream its trace as server-sent events, ending with the report."""
+    company = company.strip()
+    if not company:
+        raise HTTPException(400, "Company name is required")
+    if not settings.gemini_api_key:
+        raise HTTPException(503, "GEMINI_API_KEY is not set. Open a recorded demo instead.")
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(event: dict):
+        if event["type"] != "report":
+            await queue.put(event)
+
+    async def work():
+        try:
+            async with scan_slots:
+                scan = Scan(company, include_rivals=rivals, emit=emit)
+                report = await scan.run()
+            report = await storage.save_scan(report, scan.events)
+            await queue.put({"type": "report", "report": report})
+        except (ScanError, LLMUnavailable) as e:
+            await queue.put({"type": "error", "message": str(e)})
+        except Exception as e:
+            log.exception("Scan failed for %s", company)
+            await queue.put({"type": "error", "message": f"Scan failed: {str(e)[:200]}"})
+        finally:
+            await queue.put(None)
+
+    async def stream():
+        task = asyncio.create_task(work())
+        try:
+            while True:
+                event = await queue.get()
+                if event is None:
+                    break
+                yield sse(event)
+        finally:
+            task.cancel()  # browser went away: stop spending searches
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+@app.get("/scans")
+async def scans(limit: int = Query(20, ge=1, le=100)):
+    return await storage.list_scans(limit)
+
+
+async def _report(ref: str) -> dict:
+    """`ref` is a scan id, or `demo:<slug>` for a recorded demo."""
+    if ref.startswith("demo:"):
+        demo = storage.load_demo(ref[5:])
+        if not demo:
+            raise HTTPException(404, "Demo not found")
+        return demo["report"]
+    record = await storage.get_scan(ref)
+    if not record:
+        raise HTTPException(404, "Scan not found")
+    return record.report
+
+
+@app.get("/scans/{ref}")
+async def scan_detail(ref: str):
+    return await _report(ref)
+
+
+@app.get("/scans/{ref}/battlecard.md", response_class=PlainTextResponse)
+async def scan_battlecard(ref: str):
+    report = await _report(ref)
+    filename = f"{storage.company_key(report['company'])}-battlecard.md"
+    return PlainTextResponse(battlecard(report), media_type="text/markdown; charset=utf-8",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+# ---- recorded demos: replay a real scan without spending searches ------------
+
+@app.get("/demos")
+def demos():
+    return storage.list_demos()
+
+
+@app.get("/demos/{slug}/stream")
+async def demo_stream(slug: str, speed: float = Query(6.0, ge=1, le=50)):
+    demo = storage.load_demo(slug)
+    if not demo:
+        raise HTTPException(404, "Demo not found")
+
+    async def stream():
+        last = 0.0
+        for event in demo["events"]:
+            await asyncio.sleep(min(max(event["t"] - last, 0) / speed, 1.2))
+            last = event["t"]
+            yield sse({**event, "replay": True})
+        yield sse({"type": "report", "report": {**demo["report"], "id": f"demo:{demo['slug']}",
+                                                "replay": True, "changes": []}})
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers=SSE_HEADERS)
+
+
+# ---- ask ---------------------------------------------------------------------
+
+class AskRequest(BaseModel):
+    scan: str = Field(description="Scan id, or demo:<slug>")
+    question: str = Field(min_length=2, max_length=500)
+    history: list[dict] = Field(default_factory=list, max_length=12)
+
+
+@app.post("/ask")
+async def ask_endpoint(req: AskRequest):
+    report = await _report(req.scan)
     try:
-        if req.comparative:
-            result = await run_comparative(req.company.strip())
-        else:
-            result = run_agent(req.company.strip())
-        return result
+        return await ask(report, req.question.strip(), req.history)
+    except LLMUnavailable as e:
+        raise HTTPException(503, str(e))
     except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        log.exception("Ask failed")
+        raise HTTPException(502, str(e)[:200])
 
 
-@app.post("/followup")
-async def followup(req: FollowupRequest):
-    try:
-        answer = await answer_followup(req.brief, req.question, req.search_history)
-        return {"answer": answer}
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+# ---- watchlist ---------------------------------------------------------------
+
+class MonitorRequest(BaseModel):
+    company: str = Field(min_length=1, max_length=80)
+    frequency_hours: int = Field(24, ge=6, le=24 * 14)
 
 
-@app.post("/export/pdf")
-async def export_pdf(brief: dict):
-    try:
-        pdf_bytes = generate_pdf(brief)
-        return StreamingResponse(
-            iter([pdf_bytes]),
-            media_type="application/pdf",
-            headers={"Content-Disposition": f'attachment; filename="{brief.get("company", "rivalyze")}_brief.pdf"'}
-        )
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+class MonitorUpdate(BaseModel):
+    frequency_hours: Optional[int] = Field(None, ge=6, le=24 * 14)
+    is_active: Optional[bool] = None
 
 
-# Monitoring endpoints
-@app.post("/monitor")
-async def add_monitor(req: MonitorRequest, background_tasks: BackgroundTasks):
-    if not req.company.strip():
-        raise HTTPException(status_code=400, detail="Company name required")
+async def _monitor(session, company: str) -> MonitoredCompany:
+    result = await session.execute(select(MonitoredCompany).where(MonitoredCompany.company == company))
+    monitor = result.scalar_one_or_none()
+    if not monitor:
+        raise HTTPException(404, "Not on the watchlist")
+    return monitor
+
+
+@app.post("/monitor", status_code=201)
+async def add_monitor(req: MonitorRequest):
+    company = req.company.strip()
     async with AsyncSessionLocal() as session:
-        from sqlalchemy import select
-        existing = await session.execute(
-            select(MonitoredCompany).where(MonitoredCompany.company == req.company.strip())
-        )
+        existing = await session.execute(select(MonitoredCompany).where(MonitoredCompany.company == company))
         if existing.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail="Already monitored")
-
-        monitor = MonitoredCompany(company=req.company.strip(), frequency_hours=req.frequency_hours)
-        session.add(monitor)
+            raise HTTPException(409, "Already on the watchlist")
+        session.add(MonitoredCompany(company=company, frequency_hours=req.frequency_hours))
         await session.commit()
-
-        # Schedule job
-        job_id = f"monitor_{req.company.strip().replace(' ', '_')}"
-        scheduler.add_job(
-            run_scheduled_analysis,
-            IntervalTrigger(hours=req.frequency_hours),
-            args=[req.company.strip(), "default"],
-            id=job_id,
-            replace_existing=True,
-        )
-
-        # Run initial analysis
-        background_tasks.add_task(run_scheduled_analysis, req.company.strip(), "default")
-
-        return {"status": "monitoring started", "company": req.company.strip()}
+    # The first rescan happens after one interval; the scan the user just ran is the baseline.
+    scheduler.add_job(run_monitored_scan, IntervalTrigger(hours=req.frequency_hours),
+                      args=[company], id=_job_id(company), replace_existing=True)
+    return {"company": company, "frequency_hours": req.frequency_hours}
 
 
 @app.get("/monitor")
 async def list_monitors():
     async with AsyncSessionLocal() as session:
-        from sqlalchemy import select
-        result = await session.execute(select(MonitoredCompany))
-        monitors = result.scalars().all()
-        return [{"company": m.company, "frequency_hours": m.frequency_hours, "is_active": m.is_active, "last_run": m.last_run} for m in monitors]
+        monitors = (await session.execute(select(MonitoredCompany))).scalars().all()
+    out = []
+    for m in monitors:
+        latest = await storage.latest_scan(m.company)
+        job = scheduler.get_job(_job_id(m.company))
+        out.append({
+            "company": m.company, "frequency_hours": m.frequency_hours, "is_active": m.is_active,
+            "last_run": m.last_run.isoformat() if m.last_run else None,
+            "next_run": job.next_run_time.isoformat() if job and job.next_run_time else None,
+            "latest_scan": latest.id if latest else None,
+            "changes": (latest.report.get("changes") or [])[:5] if latest else [],
+        })
+    return out
 
 
 @app.patch("/monitor/{company}")
-async def update_monitor(company: str, req: MonitorUpdateRequest):
+async def update_monitor(company: str, req: MonitorUpdate):
     async with AsyncSessionLocal() as session:
-        from sqlalchemy import select, update
-        result = await session.execute(select(MonitoredCompany).where(MonitoredCompany.company == company))
-        monitor = result.scalar_one_or_none()
-        if not monitor:
-            raise HTTPException(status_code=404, detail="Not monitored")
-
+        monitor = await _monitor(session, company)
         if req.frequency_hours is not None:
             monitor.frequency_hours = req.frequency_hours
-            job_id = f"monitor_{company.replace(' ', '_')}"
-            scheduler.reschedule_job(job_id, trigger=IntervalTrigger(hours=req.frequency_hours))
-
+            scheduler.add_job(run_monitored_scan, IntervalTrigger(hours=req.frequency_hours),
+                              args=[company], id=_job_id(company), replace_existing=True)
         if req.is_active is not None:
             monitor.is_active = req.is_active
-            job_id = f"monitor_{company.replace(' ', '_')}"
-            if req.is_active:
-                scheduler.resume_job(job_id)
-            else:
-                scheduler.pause_job(job_id)
-
+        if not monitor.is_active:
+            scheduler.pause_job(_job_id(company))
+        elif req.is_active:
+            scheduler.resume_job(_job_id(company))
         await session.commit()
-        return {"status": "updated"}
+    return {"status": "updated"}
 
 
 @app.delete("/monitor/{company}")
 async def delete_monitor(company: str):
     async with AsyncSessionLocal() as session:
-        from sqlalchemy import select, delete
-        result = await session.execute(select(MonitoredCompany).where(MonitoredCompany.company == company))
-        monitor = result.scalar_one_or_none()
-        if not monitor:
-            raise HTTPException(status_code=404, detail="Not monitored")
-
-        job_id = f"monitor_{company.replace(' ', '_')}"
-        try:
-            scheduler.remove_job(job_id)
-        except:
-            pass
-
+        await _monitor(session, company)
         await session.execute(delete(MonitoredCompany).where(MonitoredCompany.company == company))
         await session.commit()
-        return {"status": "removed"}
-
-
-@app.get("/alerts/{company}")
-async def get_alerts(company: str, limit: int = 20):
-    async with AsyncSessionLocal() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(Alert)
-            .join(CompanySnapshot)
-            .where(CompanySnapshot.company == company)
-            .order_by(Alert.created_at.desc())
-            .limit(limit)
-        )
-        alerts = result.scalars().all()
-        return [{
-            "type": a.alert_type,
-            "field": a.field_changed,
-            "old": a.old_value,
-            "new": a.new_value,
-            "severity": a.severity,
-            "created_at": a.created_at.isoformat(),
-            "acknowledged": a.acknowledged,
-        } for a in alerts]
-
-
-@app.get("/history/{company}")
-async def get_history(company: str, limit: int = 10):
-    async with AsyncSessionLocal() as session:
-        from sqlalchemy import select
-        result = await session.execute(
-            select(CompanySnapshot)
-            .where(CompanySnapshot.company == company)
-            .order_by(CompanySnapshot.created_at.desc())
-            .limit(limit)
-        )
-        snapshots = result.scalars().all()
-        return [{
-            "brief": s.brief_json,
-            "created_at": s.created_at.isoformat(),
-        } for s in snapshots]
+    if scheduler.get_job(_job_id(company)):
+        scheduler.remove_job(_job_id(company))
+    return {"status": "removed"}
